@@ -90,9 +90,9 @@ VaultClient.prototype.login = function(username, password, callback) {
       self.infos[keys.id] = authInfo;
 
       callback(null, {
-        blob: blob,
-        username: authInfo.username,
-        verified: authInfo.emailVerified
+        blob      : blob,
+        username  : authInfo.username,
+        verified  : authInfo.emailVerified
       });
     });
   };
@@ -203,11 +203,11 @@ VaultClient.prototype.loginAndUnlock = function(username, password, callback) {
       } 
             
       callback(null, {
-        blob     : blob,
-        unlock   : keys.unlock,
-        secret   : secret,
-        username : authInfo.username,
-        verified : authInfo.emailVerified
+        blob      : blob,
+        unlock    : keys.unlock,
+        secret    : secret,
+        username  : authInfo.username,
+        verified  : authInfo.emailVerified
       });
     });
   };
@@ -231,7 +231,7 @@ VaultClient.prototype.loginAndUnlock = function(username, password, callback) {
     if (!authInfo) {
       return callback(new Error('Unable to find authInfo'));
     }
-
+  
     deriveUnlockKey(authInfo, resp.blob, callback);
   });
 };
@@ -281,11 +281,37 @@ VaultClient.prototype.verify = function(username, token, callback) {
  * resendEmail
  * send a new verification email
  * @param {object}   options
- * @param {function} callback
+ * @param {function} fn - Callback
  */
-VaultClient.prototype.resendEmail = function (options, callback) {
-  blobClient.resendEmail(options, callback);  
+VaultClient.prototype.resendEmail = function (options, fn) {
+  blobClient.resendEmail(options, fn);  
 };
+
+/**
+ * recoverBlob
+ * recover blob with account secret
+ * @param {object} options
+ * @param {string} options.url
+ * @param {string} options.username
+ * @param {string} options.masterkey
+ * @param {function} 
+ */
+
+VaultClient.prototype.recoverBlob = function (options, fn) {
+  blobClient.recoverBlob(options, fn);    
+};
+
+VaultClient.prototype.updateBlobKeys = function (options, fn) {
+  var username = String(options.username).trim();
+  
+  this.authInfo.get(this.domain, username.toLowerCase(), function(err, authInfo) {
+    if (err) {
+      return callback(err);
+    } 
+    options.pakdf = authInfo.pakdf;
+    options.blob.updateKeys(options, fn);
+  });
+}
 
 /**
  * Register a new user and save to the blob vault

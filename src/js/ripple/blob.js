@@ -1,8 +1,9 @@
 var crypt   = require('./crypt').Crypt;
 var SignedRequest = require('./signedrequest').SignedRequest;
-var request = require('superagent');
-var extend  = require("extend");
-var async   = require("async");
+var AuthInfo = require('./authinfo').AuthInfo;
+var request  = require('superagent');
+var extend   = require("extend");
+var async    = require("async");
 
 var BlobClient = {};
 
@@ -261,11 +262,12 @@ BlobObj.prototype.encryptBlobCrypt = function(secret, blobDecryptKey) {
  * Decrypt recovery key
  *
  * @param {string} secret
+ * @param {string} encryptedKey
  */
 
-BlobObj.prototype.decryptBlobCrypt = function(secret) {
+function decryptBlobCrypt (secret, encryptedKey) {
   var recoveryEncryptionKey = crypt.deriveRecoveryEncryptionKeyFromSecret(secret);
-  return crypt.decrypt(recoveryEncryptionKey, this.encrypted_blobdecrypt_key);
+  return crypt.decrypt(recoveryEncryptionKey, encryptedKey);
 };
 
 /**** Blob updating functions ****/
@@ -510,6 +512,84 @@ BlobObj.prototype.postUpdate = function(op, pointer, params, fn) {
     }
   });
 };
+
+/**
+ * updateKeys
+ * @param {object} opts
+ * @param {string} opts.username
+ * @param {string} opts.password
+ * @param {string} opts.masterkey
+ * @param {object} opts.pakdf 
+ */
+
+BlobObj.prototype.updateKeys = function (opts, fn) {
+  var self     = this;
+  var username = String(opts.username).trim();
+  var password = String(opts.password).trim(); 
+
+  function deriveKeys(callback) {
+    // derive unlock and login keys
+    var keys = { };
+
+    function deriveKey(keyType, callback) {
+      crypt.derive(opts.pakdf, keyType, username.toLowerCase(), password, function(err, key) {
+        if (err) {
+          callback(err);
+        } else {
+          keys[keyType] = key;
+          callback();
+        }
+      });
+    };
+
+    async.eachSeries([ 'login', 'unlock' ], deriveKey, function(err) {
+      if (err) {
+        callback(err);
+      } else {
+        callback(null, keys);
+      }
+    });
+  };
+  
+  function updateBlob (keys, callback) {
+    var old_id = self.id;
+    
+    self.id  = keys.login.id;
+    self.key = keys.login.crypt;
+    self.encrypted_secret = self.encryptSecret(keys.unlock.unlock, opts.masterkey);
+    
+    //post to the blob vault to create
+    var config = {
+      method : 'POST',
+      url    : self.url + '/v1/updateKeys/' + username,
+      data   : {
+        old_id  : old_id, 
+        blob_id : self.id,
+        data    : self.encrypt(),
+        encrypted_blobdecrypt_key : self.encryptBlobCrypt(opts.masterkey, self.key),
+        encrypted_secret : self.encrypted_secret
+      }
+    };
+
+    var signedRequest = new SignedRequest(config);
+    var signed = signedRequest.signAsymmetric(opts.masterkey, self.data.account_id, old_id); 
+  
+    request.post(signed.url)
+      .send(signed.data)
+      .end(function(err, resp) {
+        if (err) {
+          fn(new Error('Updated blob could not be saved - XHR error'));
+        } else if (!resp.body || resp.body.result !== 'success') {
+          fn(new Error('Updated blob could not be saved - bad result')); 
+        } else {
+          fn(null, resp.body);
+        }
+      }); 
+  };
+  
+  async.waterfall([ deriveKeys, updateBlob ], fn);
+}
+
 
 /***** helper functions *****/
 
@@ -843,6 +923,7 @@ BlobClient.verify = function(url, username, token, fn) {
  * ResendEmail
  * resend verification email
  */
+
 BlobClient.resendEmail = function (opts, fn) {
   var config = {
     method : 'POST',
@@ -873,6 +954,68 @@ BlobClient.resendEmail = function (opts, fn) {
         fn(new Error("Failed to resend the token")); 
       }
     });
+};
+
+/**
+ * RecoverBlob
+ * recover a blob using the account secret
+ * @param {object} opts
+ * @param {string} opts.url
+ * @param {string} opts.username
+ * @param {string} opts.masterkey
+ * @param {function} fn
+ */
+
+BlobClient.recoverBlob = function (opts, fn) {
+  var username = String(opts.username).trim();
+  var config   = {
+    method : 'GET',
+    url    : opts.url + '/v1/recov' + username,
+  };
+
+  var signedRequest = new SignedRequest(config);
+  var signed = signedRequest.signAsymmetricRecovery(opts.masterkey, username);  
+
+  request.post(signed.url)
+    .end(function(err, resp) {
+      if (err) {
+        fn(err);
+      } else if (resp.body && resp.body.result === 'success') {
+        handleRecovery(resp);
+      } else if (resp.body && resp.body.result === 'error') {
+        fn(new Error(resp.body.message)); 
+      } else {
+        fn(new Error('Could not recover blob'));
+      }
+    });
+    
+  function handleRecovery (resp) {
+    //decrypt crypt key
+    var crypt = decryptBlobCrypt(resp.body.encrypted_blobdecrypt_key);
+    var blob  = new BlobObj(opts.url, resp.body.blob_id, crypt);
+
+    self.revision = resp.body.revision;
+    self.encrypted_secret = resp.body.encrypted_secret;
+
+    if (!blob.decrypt(resp.body.blob)) {
+      return fn(new Error('Error while decrypting blob'));
+    }
+
+    //Apply patches
+    if (resp.body.patches && resp.body.patches.length) {
+      var successful = true;
+      resp.body.patches.forEach(function(patch) {
+        successful = successful && blob.applyEncryptedPatch(patch);
+      });
+
+      if (successful) {
+        blob.consolidate();
+      }
+    }
+
+    //return with newly decrypted blob
+    fn(null, blob);
+  };
 };
 
 /**
@@ -935,7 +1078,7 @@ BlobClient.create = function(options, fn) {
       if (err) {
         fn(err);
       } else if (resp.body && resp.body.result === 'success') {
-        fn(null, blob,resp.body);
+        fn(null, blob, resp.body);
       } else if (resp.body && resp.body.result === 'error') {
         fn(new Error(resp.body.message)); 
       } else {
