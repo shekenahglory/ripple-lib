@@ -163,7 +163,7 @@ SignedRequest.prototype.signAsymmetricRecovery = function (secretKey, username) 
   // Parse URL
   var parsed        = parser.parse(config.url);
   var date          = dateAsIso8601();
-  var signatureType = 'RIPPLE1-ECDSA-SHA512-RECOVERY';
+  var signatureType = 'RIPPLE1-ECDSA-SHA512';
   var stringToSign  = this.getStringToSign(parsed, date, signatureType);
   var signature     = Message.signMessage(stringToSign, secretKey);
  

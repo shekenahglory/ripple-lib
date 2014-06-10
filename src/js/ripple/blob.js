@@ -561,11 +561,11 @@ BlobObj.prototype.updateKeys = function (opts, fn) {
     //post to the blob vault to create
     var config = {
       method : 'POST',
-      url    : self.url + '/v1/updateKeys/' + username,
+      url    : self.url + '/v1/user/' + username,
       data   : {
-        old_id  : old_id, 
-        blob_id : self.id,
-        data    : self.encrypt(),
+        blob_id  : self.id,
+        data     : self.encrypt(),
+        revision : self.revision,
         encrypted_blobdecrypt_key : self.encryptBlobCrypt(opts.masterkey, self.key),
         encrypted_secret : self.encrypted_secret
       }
@@ -970,13 +970,13 @@ BlobClient.recoverBlob = function (opts, fn) {
   var username = String(opts.username).trim();
   var config   = {
     method : 'GET',
-    url    : opts.url + '/v1/recov' + username,
+    url    : opts.url + '/v1/user/recov/' + username,
   };
 
   var signedRequest = new SignedRequest(config);
   var signed = signedRequest.signAsymmetricRecovery(opts.masterkey, username);  
 
-  request.post(signed.url)
+  request.get(signed.url)
     .end(function(err, resp) {
       if (err) {
         fn(err);
@@ -991,11 +991,11 @@ BlobClient.recoverBlob = function (opts, fn) {
     
   function handleRecovery (resp) {
     //decrypt crypt key
-    var crypt = decryptBlobCrypt(resp.body.encrypted_blobdecrypt_key);
+    var crypt = decryptBlobCrypt(opts.masterkey, resp.body.encrypted_blobdecrypt_key);
     var blob  = new BlobObj(opts.url, resp.body.blob_id, crypt);
-
-    self.revision = resp.body.revision;
-    self.encrypted_secret = resp.body.encrypted_secret;
+    
+    blob.revision = resp.body.revision;
+    blob.encrypted_secret = resp.body.encrypted_secret;
 
     if (!blob.decrypt(resp.body.blob)) {
       return fn(new Error('Error while decrypting blob'));
