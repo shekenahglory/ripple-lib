@@ -101,7 +101,8 @@ function Remote(opts, trace) {
   this._transaction_subs = 0;
   this._connection_count = 0;
   this._connected = false;
-
+  this._poll = null;
+  
   this._connection_offset = 1000 * (typeof opts.connection_offset === 'number' ? opts.connection_offset : 0);
   this._submission_timeout = 1000 * (typeof opts.submission_timeout === 'number' ? opts.submission_timeout : 10);
 
@@ -179,6 +180,10 @@ function Remote(opts, trace) {
     throw new TypeError('Remote "ping" configuration is not a Number');
   }
 
+  if (!/^(undefined|number)$/.test(typeof opts.poll_interval)) {
+    throw new TypeError('Remote "ping" configuration is not a Number');
+  }
+  
   if (!/^(undefined|object)$/.test(typeof opts.storage)) {
     throw new TypeError('Remote "storage" configuration is not an Object');
   }
@@ -233,6 +238,52 @@ function Remote(opts, trace) {
 
   this.on('removeListener', listenerRemoved);
 
+  if (opts.poll_interval && 
+      typeof navigator != 'undefined' && 
+      navigator.onLine != 'undefined') {  
+        
+    var online; 
+    this.on('connect', function () {
+
+      clearInterval(self._poll);
+      self._poll = setInterval (connectionPoll, opts.poll_interval * 1000); 
+      
+      //function to poll online status changes
+      function connectionPoll() {    
+        //log.info(online, navigator.onLine);
+        if (online && !navigator.onLine) {
+          disconnect();
+          
+        } else if (!online && navigator.onLine) {
+          reconnect();
+        }
+      };
+      
+      //reconnect to servers
+      function reconnect() {
+        ;(function nextServer(i) {
+        self._servers[i].connect();
+        var next = nextServer.bind(this, ++i);
+        if (i < self._servers.length) {
+          setTimeout(next, self._connection_offset);
+        }
+        })(0);
+        
+        online = true;  
+      };
+      
+      //disconnect when offline
+      function disconnect() {
+        self._servers.forEach(function(server) {
+          server.disconnect();
+        });
+      
+        self._set_state('offline'); 
+        online = false;      
+      };
+    }); 
+  }
+  
   if (opts.storage) {
     this.storage = opts.storage;
     this.once('connect', this.getPendingTransactions.bind(this));
@@ -547,7 +598,11 @@ Remote.prototype.disconnect = function(callback) {
   });
 
   this._set_state('offline');
-
+  
+  //if we are polling for internet connection, stop polling
+  if (this._poll) {  
+    clearInterval(this._poll); 
+  }
   return this;
 };
 
